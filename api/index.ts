@@ -6,93 +6,85 @@ let serverLoadPromise: Promise<void> | null = null;
 
 async function ensureExpressServerLoaded() {
   if (capturedApp) return;
-  if (!serverLoadPromise) {
-    serverLoadPromise = (async () => {
-      const originalListen = (express.application as any).listen;
-      try {
-        (express.application as any).listen = function (..._args: any[]) {
-          capturedApp = this;
-          return { on() { return this; }, close(callback?: () => void) { if (callback) callback(); } } as any;
-        };
-        process.env.NODE_ENV = "production";
-        await import("../server.ts");
-      } finally {
-        (express.application as any).listen = originalListen;
-      }
-    })();
-  }
+  if (!serverLoadPromise) serverLoadPromise = (async () => {
+    const originalListen = (express.application as any).listen;
+    try {
+      (express.application as any).listen = function (..._args: any[]) { capturedApp = this; return { on(){return this;}, close(cb?:()=>void){cb?.();} } as any; };
+      process.env.NODE_ENV = "production";
+      await import("../server.ts");
+    } finally { (express.application as any).listen = originalListen; }
+  })();
   await serverLoadPromise;
 }
 
-function cleanAmount(value?: string): number | null {
-  if (!value) return null;
-  const n = Number(value.replace(/[^0-9.]/g, ""));
-  return Number.isFinite(n) ? n : null;
-}
-function firstMatch(text: string, patterns: RegExp[]): string | null {
-  for (const pattern of patterns) { const match = text.match(pattern); if (match?.[1]) return match[1].trim(); }
-  return null;
-}
-function countAccountStatuses(text: string, status: "written-off" | "settled"): number {
-  const accountSection = text.split(/enquir(?:y|ies)\s+(?:details|information)/i)[0] || text;
-  const blocks = accountSection.split(/member\s*name/i).slice(1);
-  if (!blocks.length) return 0;
-  const pattern = status === "written-off" ? /written[\s-]*off|write[\s-]*off/i : /\bsettled\b|settlement/i;
-  return blocks.filter((block) => pattern.test(block)).length;
-}
+function firstMatch(text:string, patterns:RegExp[]) { for (const p of patterns) { const m=text.match(p); if(m?.[1]) return m[1].trim(); } return null; }
+function money(v?:string|null){ if(!v || v.trim()==="-") return null; const n=Number(v.replace(/[^0-9.-]/g,"")); return Number.isFinite(n)?n:null; }
+function norm(v:any){ return String(v||"").toUpperCase().replace(/[^A-Z0-9]/g,""); }
+async function extractPdfText(buffer:Buffer){ const mod:any=await import("pdf-parse"); const PDFParse=mod.PDFParse; if(!PDFParse) throw new Error("PDF parser unavailable"); const parser=new PDFParse({data:buffer}); try { const r:any=await parser.getText(); return typeof r==="string"?r:String(r?.text||""); } finally { if(typeof parser.destroy==="function") await parser.destroy(); } }
 
-async function extractPdfText(buffer: Buffer): Promise<string> {
-  // Import pdf-parse only for an actual PDF request. This prevents pdfjs/canvas
-  // initialization from crashing unrelated API routes such as /api/health/login.
-  const mod: any = await import("pdf-parse");
-  const PDFParse = mod.PDFParse;
-  if (!PDFParse) throw new Error("PDF parser is unavailable in this runtime");
-  const parser = new PDFParse({ data: buffer });
-  try {
-    const parsed: any = await parser.getText();
-    return typeof parsed === "string" ? parsed : String(parsed?.text || "");
-  } finally {
-    if (typeof parser.destroy === "function") await parser.destroy();
-  }
+function parseAccounts(text:string){
+  const accountsPart=(text.split(/ENQUIRY DETAILS/i)[0]||text);
+  const chunks=accountsPart.split(/\bMember Name\s*/i).slice(1);
+  return chunks.map((chunk,index)=>{
+    const member=firstMatch(chunk,[/^([^\n\r]+)/]);
+    const accountType=firstMatch(chunk,[/Account Type\s*\n?\s*([^\n\r]+)/i]);
+    const accountNumber=firstMatch(chunk,[/Account Number\s*\n?\s*([^\n\r]+)/i]);
+    const ownership=firstMatch(chunk,[/Ownership\s*\n?\s*([^\n\r]+)/i]);
+    const sanctioned=money(firstMatch(chunk,[/Sanctioned Amount\s*₹?\s*([\d,.-]+)/i]));
+    const currentBalance=money(firstMatch(chunk,[/Current Balance\s*₹?\s*([\d,.-]+)/i]));
+    const overdue=money(firstMatch(chunk,[/Amount Overdue\s*₹?\s*([\d,.-]+)/i]));
+    const status=firstMatch(chunk,[/Credit Facility Status\s*\n?\s*([^\n\r]+)/i]);
+    const writtenOffTotal=money(firstMatch(chunk,[/Written-off Amount \(Total\)\s*₹?\s*([\d,.-]+)/i]));
+    const settlement=money(firstMatch(chunk,[/Settlement Amount\s*₹?\s*([\d,.-]+)/i]));
+    const opened=firstMatch(chunk,[/Date Opened \/ Disbursed\s*(\d{1,2}\/\d{1,2}\/\d{4})/i]);
+    const closed=firstMatch(chunk,[/Date Closed\s*(\d{1,2}\/\d{1,2}\/\d{4}|-)/i]);
+    const reported=firstMatch(chunk,[/Date Reported And Certified\s*(\d{1,2}\/\d{1,2}\/\d{4})/i]);
+    const emi=money(firstMatch(chunk,[/EMI Amount\s*₹?\s*([\d,.-]+)/i]));
+    const dpds=[...chunk.matchAll(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+20\d{2}\s+(\d{1,4})\b/gi)].map(m=>Number(m[1])).filter(Number.isFinite);
+    return { id:index+1, memberName:member, accountType, accountNumber, ownership, sanctionedAmount:sanctioned, currentBalance, amountOverdue:overdue, creditFacilityStatus:status, writtenOffAmountTotal:writtenOffTotal, settlementAmount:settlement, dateOpened:opened, dateClosed:closed, dateReported:reported, emiAmount:emi, maxDpd:dpds.length?Math.max(...dpds):null, isOpen:!closed || closed==="-" };
+  }).filter(a=>a.memberName && a.accountType && a.accountNumber);
 }
 
-async function handleStrictCibilParse(req: Request, res: Response) {
-  try {
-    const { fileName, fileDataUrl, manualDetails, customerName, panNumber, dob } = req.body || {};
-    let text = String(manualDetails?.rawText || "");
-    if (fileDataUrl && (String(fileName || "").toLowerCase().endsWith(".pdf") || String(fileDataUrl).includes("application/pdf"))) {
-      const base64Data = String(fileDataUrl).split(",")[1] || String(fileDataUrl);
-      text = await extractPdfText(Buffer.from(base64Data, "base64"));
-    }
-    if (!text.trim()) return res.status(422).json({ success: false, code: "CIBIL_TEXT_NOT_EXTRACTED", message: "Uploaded credit report could not be read. No demo/default values were used. Please upload a text-readable official PDF." });
-
-    const scoreRaw = firstMatch(text, [/your\s+cibil\s+score\s+is\s+([3-9]\d{2})\b/i, /(?:transunion\s+cibil\s+score|cibil\s+score|credit\s+score|bureau\s+score|score\s+value)\s*[:=-]?\s*([3-9]\d{2})\b/i, /\b([3-9]\d{2})\b(?=[\s\S]{0,35}(?:cibil\s+score|score\s+range|300\s*[-–]\s*900))/i]);
-    const score = scoreRaw ? Number(scoreRaw) : null;
-    const detectedPan = firstMatch(text, [/\b([A-Z]{5}[0-9]{4}[A-Z])\b/]);
-    const controlNumber = firstMatch(text, [/control\s*(?:number|no\.?)[\s:#-]*([A-Z0-9,./-]{6,30})/i, /(?:report\s*(?:number|no\.?)|ecn)[\s:#-]*([A-Z0-9,./-]{6,30})/i]);
-    const reportDate = firstMatch(text, [/(?:date\s+of\s+report|report\s+date|generated\s+on)\s*[:=-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i, /\bdate\s*:\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i]);
-    const detectedDob = firstMatch(text, [/(?:date\s+of\s+birth|dob)\s*[:=-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i]);
-    const detectedName = firstMatch(text, [/(?:consumer\s+name|applicant\s+name|customer\s+name)\s*[:=-]?\s*([A-Za-z][A-Za-z .]{2,60})/i, /hello,\s*([A-Za-z][A-Za-z .]{2,60}?)(?:\n|$)/i]);
-    let bureauName = "Credit Bureau";
-    if (/transunion\s*cibil|\bcibil\b/i.test(text)) bureauName = "TransUnion CIBIL"; else if (/experian/i.test(text)) bureauName = "Experian"; else if (/equifax/i.test(text)) bureauName = "Equifax"; else if (/crif|high\s*mark/i.test(text)) bureauName = "CRIF High Mark";
-    const overdueValues = [...text.matchAll(/amount\s+overdue\s*[:₹Rs.\s]*([\d,]+)/gi)].map((m) => cleanAmount(m[1])).filter((v): v is number => v !== null);
-    const totalOverdue = overdueValues.length ? overdueValues.reduce((a, b) => a + b, 0) : null;
-    const accountBlocks = text.split(/member\s*name/i).slice(1);
-    const normalized = (v: any) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const isPanVerified = Boolean(normalized(panNumber) && normalized(detectedPan) && normalized(panNumber) === normalized(detectedPan));
-
-    return res.json({ success: true, message: "Credit report analyzed in strict source-only mode. Only values found in the uploaded report are returned.", report: { bureauName, score, controlNumber, reportDate, customerDetails: { name: detectedName, pan: detectedPan, dob: detectedDob }, verifiedProfile: { matchedName: detectedName, matchedPan: detectedPan, matchedDob: detectedDob, isPanVerified, isNameVerified: Boolean(customerName && detectedName && normalized(customerName) === normalized(detectedName)), isDobVerified: Boolean(dob && detectedDob && String(dob).replace(/\D/g, "") === String(detectedDob).replace(/\D/g, "")), verificationScore: null, verificationNotes: "Identity fields are verified only when exact values are present in the uploaded bureau report." }, summary: { activeLoansCount: null, activeCreditCardsCount: null, totalOutstanding: null, totalOverdue, settledAccountsCount: countAccountStatuses(text, "settled"), writtenOffAccountsCount: countAccountStatuses(text, "written-off"), totalEnquiries: null, creditUtilizationPercent: null, dpdInstances: null }, accounts: [], enquiries: [], extractionMeta: { mode: "STRICT_SOURCE_ONLY", sourceTextCharacters: text.length, detectedAccountBlocks: accountBlocks.length, warnings: [...(score === null ? ["CIBIL score could not be confidently extracted"] : []), ...(controlNumber === null ? ["Control number could not be confidently extracted"] : []), ...(detectedPan === null ? ["PAN was not found in report text"] : []), "No hardcoded customer, score, balance, account, DPD, utilization or enquiry fallback data is used."] } } });
-  } catch (error: any) {
-    console.error("Strict CIBIL parsing error:", error);
-    return res.status(500).json({ success: false, message: "Failed to parse uploaded credit report", error: error?.message });
-  }
+function parseEnquiries(text:string){
+  const part=text.split(/ENQUIRY DETAILS/i)[1]||"";
+  const chunks=part.split(/\bMember Name\s*/i).slice(1);
+  return chunks.map(c=>({ memberName:firstMatch(c,[/^([^\n\r]+)/]), dateOfEnquiry:firstMatch(c,[/Date Of Enquiry\s*(\d{1,2}\/\d{1,2}\/\d{4})/i]), enquiryPurpose:firstMatch(c,[/Enquiry Purpose\s*([^\n\r]+)/i]) })).filter(e=>e.memberName&&e.dateOfEnquiry);
 }
 
-export default async function handler(req: Request, res: Response) {
-  const path = req.url?.split("?")[0] || "";
-  if (req.method === "GET" && path === "/api/health") return res.json({ status: "ok", app: "Savrdh Credit Resolution Customer App", runtime: "vercel-serverless" });
-  if (req.method === "POST" && path === "/api/cibil/parse-report") return handleStrictCibilParse(req, res);
-  try { await ensureExpressServerLoaded(); } catch (error: any) { console.error("Express backend initialization failed:", error); return res.status(500).json({ success: false, message: "Backend initialization failed", error: error?.message }); }
-  if (!capturedApp) return res.status(503).json({ success: false, message: "SAVRDH API is initializing. Please retry." });
-  return capturedApp(req, res);
+async function handleCibil(req:Request,res:Response){
+  try{
+    const {fileName,fileDataUrl,manualDetails,customerName,panNumber,dob}=req.body||{};
+    let text=String(manualDetails?.rawText||"");
+    if(fileDataUrl && (String(fileName||"").toLowerCase().endsWith(".pdf")||String(fileDataUrl).includes("application/pdf"))) text=await extractPdfText(Buffer.from(String(fileDataUrl).split(",")[1]||String(fileDataUrl),"base64"));
+    if(!text.trim()) return res.status(422).json({success:false,code:"CIBIL_TEXT_NOT_EXTRACTED",message:"Uploaded CIBIL PDF text could not be extracted."});
+
+    const scoreRaw=firstMatch(text,[/Your CIBIL Score is\s*([3-9]\d{2})\s+as of Date/i,/CIBIL Score[^\d]{0,30}([3-9]\d{2})\b/i]);
+    const score=scoreRaw?Number(scoreRaw):null;
+    const controlNumber=firstMatch(text,[/Control Number\s*:\s*([\d,]+)/i]);
+    const reportDate=firstMatch(text,[/Your CIBIL Score is\s*[3-9]\d{2}\s+as of Date\s*:\s*(\d{1,2}\/\d{1,2}\/\d{4})/i,/Control Number[^\n]*\nDate\s*:\s*(\d{1,2}\/\d{1,2}\/\d{4})/i]);
+    const detectedPan=firstMatch(text,[/Identification Type\s+Income Tax ID Number \(PAN\)[\s\S]{0,100}?ID Number\s+([A-Z]{5}\d{4}[A-Z])/i,/\b([A-Z]{5}\d{4}[A-Z])\b/]);
+    const detectedDob=firstMatch(text,[/Date Of Birth\s+(\d{1,2}\/\d{1,2}\/\d{4})/i]);
+    const detectedName=firstMatch(text,[/Hello,\s*([^\n\r]+?)(?:\.|\n)/i,/PERSONAL DETAILS[\s\S]{0,100}?Name\s*\n?\s*([^\n\r]+)/i]);
+    const accounts=parseAccounts(text);
+    const enquiries=parseEnquiries(text);
+    const openAccounts=accounts.filter(a=>a.isOpen);
+    const writtenOff=accounts.filter(a=>/written[\s-]*off/i.test(a.creditFacilityStatus||"") || (a.writtenOffAmountTotal||0)>0);
+    const settled=accounts.filter(a=>/settled/i.test(a.creditFacilityStatus||"") || (a.settlementAmount||0)>0);
+    const totalOverdue=accounts.reduce((s,a)=>s+(a.amountOverdue||0),0);
+    const totalOutstanding=openAccounts.reduce((s,a)=>s+Math.max(a.currentBalance||0,0),0);
+    const activeCreditCardsCount=openAccounts.filter(a=>/credit card/i.test(a.accountType||"")).length;
+    const activeLoansCount=openAccounts.length-activeCreditCardsCount;
+    const dpdInstances=accounts.reduce((s,a)=>s+(a.maxDpd&&a.maxDpd>0?1:0),0);
+
+    return res.json({success:true,message:"TransUnion CIBIL report parsed from uploaded source data.",report:{bureauName:"TransUnion CIBIL",score,controlNumber,reportDate,customerDetails:{name:detectedName,pan:detectedPan,dob:detectedDob},verifiedProfile:{matchedName:detectedName,matchedPan:detectedPan,matchedDob:detectedDob,isPanVerified:Boolean(panNumber&&detectedPan&&norm(panNumber)===norm(detectedPan)),isNameVerified:Boolean(customerName&&detectedName&&norm(customerName)===norm(detectedName)),isDobVerified:Boolean(dob&&detectedDob&&String(dob).replace(/\D/g,"")===String(detectedDob).replace(/\D/g,""))},summary:{activeLoansCount,activeCreditCardsCount,totalOutstanding,totalOverdue,settledAccountsCount:settled.length,writtenOffAccountsCount:writtenOff.length,totalEnquiries:enquiries.length,creditUtilizationPercent:null,dpdInstances},accounts,enquiries,extractionMeta:{mode:"TRANSUNION_CIBIL_SOURCE_ONLY",sourceTextCharacters:text.length,detectedAccounts:accounts.length,detectedEnquiries:enquiries.length,warnings:[]}}});
+  }catch(error:any){ console.error("CIBIL parsing error",error); return res.status(500).json({success:false,message:"Failed to parse uploaded CIBIL report",error:error?.message}); }
+}
+
+export default async function handler(req:Request,res:Response){
+  const path=req.url?.split("?")[0]||"";
+  if(req.method==="GET"&&path==="/api/health") return res.json({status:"ok",app:"Savrdh Credit Resolution Customer App",runtime:"vercel-serverless"});
+  if(req.method==="POST"&&path==="/api/cibil/parse-report") return handleCibil(req,res);
+  try{await ensureExpressServerLoaded();}catch(error:any){return res.status(500).json({success:false,message:"Backend initialization failed",error:error?.message});}
+  if(!capturedApp)return res.status(503).json({success:false,message:"SAVRDH API is initializing. Please retry."});
+  return capturedApp(req,res);
 }
