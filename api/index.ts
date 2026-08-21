@@ -1,100 +1,33 @@
 import express from "express";
 import type { Request, Response } from "express";
 
-let capturedApp: any = null;
-let serverLoadPromise: Promise<void> | null = null;
+let capturedApp:any=null; let serverLoadPromise:Promise<void>|null=null;
+async function ensureExpressServerLoaded(){if(capturedApp)return;if(!serverLoadPromise)serverLoadPromise=(async()=>{const originalListen=(express.application as any).listen;try{(express.application as any).listen=function(..._args:any[]){capturedApp=this;return{on(){return this;},close(cb?:()=>void){cb?.();}} as any};process.env.NODE_ENV="production";await import("../server.ts");}finally{(express.application as any).listen=originalListen;}})();await serverLoadPromise;}
+function norm(v:any){return String(v||"").toUpperCase().replace(/[^A-Z0-9]/g,"");}
+function responseText(data:any){if(typeof data?.output_text==="string")return data.output_text;for(const item of data?.output||[])for(const c of item?.content||[])if(typeof c?.text==="string")return c.text;return "";}
 
-async function ensureExpressServerLoaded() {
-  if (capturedApp) return;
-  if (!serverLoadPromise) serverLoadPromise = (async () => {
-    const originalListen = (express.application as any).listen;
-    try {
-      (express.application as any).listen = function (..._args: any[]) { capturedApp = this; return { on(){return this;}, close(cb?:()=>void){cb?.();} } as any; };
-      process.env.NODE_ENV = "production";
-      await import("../server.ts");
-    } finally { (express.application as any).listen = originalListen; }
-  })();
-  await serverLoadPromise;
+const CIBIL_SCHEMA={type:"object",additionalProperties:false,required:["bureauName","score","controlNumber","reportDate","customerDetails","summary","accounts","enquiries","warnings"],properties:{
+ bureauName:{type:["string","null"]},score:{type:["integer","null"]},controlNumber:{type:["string","null"]},reportDate:{type:["string","null"]},
+ customerDetails:{type:"object",additionalProperties:false,required:["name","pan","dob"],properties:{name:{type:["string","null"]},pan:{type:["string","null"]},dob:{type:["string","null"]}}},
+ summary:{type:"object",additionalProperties:false,required:["activeLoansCount","activeCreditCardsCount","totalOutstanding","totalOverdue","settledAccountsCount","writtenOffAccountsCount","totalEnquiries","creditUtilizationPercent","dpdInstances"],properties:{activeLoansCount:{type:"integer"},activeCreditCardsCount:{type:"integer"},totalOutstanding:{type:"number"},totalOverdue:{type:"number"},settledAccountsCount:{type:"integer"},writtenOffAccountsCount:{type:"integer"},totalEnquiries:{type:"integer"},creditUtilizationPercent:{type:["number","null"]},dpdInstances:{type:"integer"}}},
+ accounts:{type:"array",items:{type:"object",additionalProperties:false,required:["id","memberName","accountType","accountNumber","ownership","sanctionedAmount","currentBalance","overdueAmount","status","writtenOffAmountTotal","settlementAmount","dateOpened","dateClosed","dateReported","emiAmount","maxDpd","isOpen"],properties:{id:{type:"integer"},memberName:{type:["string","null"]},accountType:{type:["string","null"]},accountNumber:{type:["string","null"]},ownership:{type:["string","null"]},sanctionedAmount:{type:["number","null"]},currentBalance:{type:["number","null"]},overdueAmount:{type:["number","null"]},status:{type:["string","null"]},writtenOffAmountTotal:{type:["number","null"]},settlementAmount:{type:["number","null"]},dateOpened:{type:["string","null"]},dateClosed:{type:["string","null"]},dateReported:{type:["string","null"]},emiAmount:{type:["number","null"]},maxDpd:{type:["integer","null"]},isOpen:{type:"boolean"}}}},
+ enquiries:{type:"array",items:{type:"object",additionalProperties:false,required:["memberName","dateOfEnquiry","enquiryPurpose","amount"],properties:{memberName:{type:["string","null"]},dateOfEnquiry:{type:["string","null"]},enquiryPurpose:{type:["string","null"]},amount:{type:["number","null"]}}}},warnings:{type:"array",items:{type:"string"}}
+}};
+
+async function analyzeCibilWithOpenAI(fileDataUrl:string,fileName:string){
+ const key=process.env.OPENAI_API_KEY;if(!key)throw Object.assign(new Error("OpenAI CIBIL analyzer is not configured. Add OPENAI_API_KEY in Vercel Production Environment Variables."),{code:"OPENAI_NOT_CONFIGURED"});
+ const prompt=`You are a credit-bureau document extraction engine for SAVRDH Financial Services. Analyze ONLY the attached Indian credit report PDF. Extract facts exactly as printed. Never invent, estimate, infer a missing amount, or reuse example/demo data. Missing values must be null or zero only where the schema requires a numeric aggregate. Distinguish open and closed accounts. Preserve Written-off and Settled status exactly. Calculate summary totals only from extracted accounts. DPD means days past due; maxDpd is the maximum numeric DPD visibly reported for that account. For masked account numbers preserve the visible masked form. The result will be validated before being shown to a customer.`;
+ const r=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{"Authorization":`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:process.env.OPENAI_CIBIL_MODEL||"gpt-5-mini",input:[{role:"user",content:[{type:"input_text",text:prompt},{type:"input_file",filename:fileName||"cibil-report.pdf",file_data:fileDataUrl}]}],text:{format:{type:"json_schema",name:"cibil_report",strict:true,schema:CIBIL_SCHEMA}}})});
+ const data=await r.json();if(!r.ok)throw new Error(data?.error?.message||`OpenAI analyzer failed (${r.status})`);const text=responseText(data);if(!text)throw new Error("OpenAI analyzer returned no structured report");return JSON.parse(text);
 }
 
-function firstMatch(text:string, patterns:RegExp[]) { for (const p of patterns) { const m=text.match(p); if(m?.[1]) return m[1].trim(); } return null; }
-function money(v?:string|null){ if(!v || v.trim()==="-") return null; const n=Number(v.replace(/[^0-9.-]/g,"")); return Number.isFinite(n)?n:null; }
-function norm(v:any){ return String(v||"").toUpperCase().replace(/[^A-Z0-9]/g,""); }
-
-// pdfjs references browser graphics globals even when we only request text.
-// Vercel's Node runtime does not provide these globals and native canvas is not
-// guaranteed to be bundled. Minimal no-op shims are enough for text extraction.
-function ensurePdfJsNodeGlobals(){
-  const g:any=globalThis as any;
-  if(typeof g.DOMMatrix==="undefined") g.DOMMatrix=class DOMMatrix { constructor(_init?:any){} multiply(){return this;} preMultiplySelf(){return this;} translate(){return this;} scale(){return this;} rotate(){return this;} inverse(){return this;} };
-  if(typeof g.ImageData==="undefined") g.ImageData=class ImageData { data:any; width:number; height:number; constructor(dataOrWidth:any,widthOrHeight:any,height?:any){ if(typeof dataOrWidth==="number"){this.width=dataOrWidth;this.height=widthOrHeight;this.data=new Uint8ClampedArray(this.width*this.height*4);}else{this.data=dataOrWidth;this.width=widthOrHeight;this.height=height||0;} } };
-  if(typeof g.Path2D==="undefined") g.Path2D=class Path2D { constructor(_path?:any){} addPath(){} moveTo(){} lineTo(){} rect(){} closePath(){} bezierCurveTo(){} quadraticCurveTo(){} arc(){} arcTo(){} ellipse(){} };
-}
-async function extractPdfText(buffer:Buffer){ ensurePdfJsNodeGlobals(); const mod:any=await import("pdf-parse"); const PDFParse=mod.PDFParse; if(!PDFParse) throw new Error("PDF parser unavailable"); const parser=new PDFParse({data:buffer}); try { const r:any=await parser.getText(); return typeof r==="string"?r:String(r?.text||""); } finally { if(typeof parser.destroy==="function") await parser.destroy(); } }
-
-function parseAccounts(text:string){
-  const accountsPart=(text.split(/ENQUIRY DETAILS/i)[0]||text);
-  const chunks=accountsPart.split(/\bMember Name\s*/i).slice(1);
-  return chunks.map((chunk,index)=>{
-    const member=firstMatch(chunk,[/^([^\n\r]+)/]);
-    const accountType=firstMatch(chunk,[/Account Type\s*\n?\s*([^\n\r]+)/i]);
-    const accountNumber=firstMatch(chunk,[/Account Number\s*\n?\s*([^\n\r]+)/i]);
-    const ownership=firstMatch(chunk,[/Ownership\s*\n?\s*([^\n\r]+)/i]);
-    const sanctioned=money(firstMatch(chunk,[/Sanctioned Amount\s*₹?\s*([\d,.-]+)/i]));
-    const currentBalance=money(firstMatch(chunk,[/Current Balance\s*₹?\s*([\d,.-]+)/i]));
-    const overdue=money(firstMatch(chunk,[/Amount Overdue\s*₹?\s*([\d,.-]+)/i]));
-    const status=firstMatch(chunk,[/Credit Facility Status\s*\n?\s*([^\n\r]+)/i]);
-    const writtenOffTotal=money(firstMatch(chunk,[/Written-off Amount \(Total\)\s*₹?\s*([\d,.-]+)/i]));
-    const settlement=money(firstMatch(chunk,[/Settlement Amount\s*₹?\s*([\d,.-]+)/i]));
-    const opened=firstMatch(chunk,[/Date Opened \/ Disbursed\s*(\d{1,2}\/\d{1,2}\/\d{4})/i]);
-    const closed=firstMatch(chunk,[/Date Closed\s*(\d{1,2}\/\d{1,2}\/\d{4}|-)/i]);
-    const reported=firstMatch(chunk,[/Date Reported And Certified\s*(\d{1,2}\/\d{1,2}\/\d{4})/i]);
-    const emi=money(firstMatch(chunk,[/EMI Amount\s*₹?\s*([\d,.-]+)/i]));
-    const dpds=[...chunk.matchAll(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+20\d{2}\s+(\d{1,4})\b/gi)].map(m=>Number(m[1])).filter(Number.isFinite);
-    return { id:index+1, memberName:member, accountType, accountNumber, ownership, sanctionedAmount:sanctioned, currentBalance, amountOverdue:overdue, creditFacilityStatus:status, writtenOffAmountTotal:writtenOffTotal, settlementAmount:settlement, dateOpened:opened, dateClosed:closed, dateReported:reported, emiAmount:emi, maxDpd:dpds.length?Math.max(...dpds):null, isOpen:!closed || closed==="-" };
-  }).filter(a=>a.memberName && a.accountType && a.accountNumber);
+function validateReport(report:any,customerName?:string,panNumber?:string,dob?:string){
+ const errors:string[]=[];if(report.score!==null&&(report.score<300||report.score>900))errors.push("CIBIL score is outside 300-900 range");if(report.customerDetails?.pan&&!/^[A-Z]{5}\d{4}[A-Z]$/i.test(report.customerDetails.pan))errors.push("Extracted PAN format is invalid");
+ const sum=(report.accounts||[]).reduce((s:number,a:any)=>s+(Number(a.overdueAmount)||0),0);if(Math.abs(sum-(Number(report.summary?.totalOverdue)||0))>1)errors.push("Total overdue does not match account-level overdue values");
+ const written=(report.accounts||[]).filter((a:any)=>/written[\s-]*off/i.test(a.status||"")||(Number(a.writtenOffAmountTotal)||0)>0).length;if(written!==Number(report.summary?.writtenOffAccountsCount||0))errors.push("Written-off account count does not match extracted accounts");
+ return {errors,verifiedProfile:{matchedName:report.customerDetails?.name||null,matchedPan:report.customerDetails?.pan||null,matchedDob:report.customerDetails?.dob||null,isPanVerified:Boolean(panNumber&&report.customerDetails?.pan&&norm(panNumber)===norm(report.customerDetails.pan)),isNameVerified:Boolean(customerName&&report.customerDetails?.name&&norm(customerName)===norm(report.customerDetails.name)),isDobVerified:Boolean(dob&&report.customerDetails?.dob&&String(dob).replace(/\D/g,"")===String(report.customerDetails.dob).replace(/\D/g,""))}};
 }
 
-function parseEnquiries(text:string){
-  const part=text.split(/ENQUIRY DETAILS/i)[1]||"";
-  const chunks=part.split(/\bMember Name\s*/i).slice(1);
-  return chunks.map(c=>({ memberName:firstMatch(c,[/^([^\n\r]+)/]), dateOfEnquiry:firstMatch(c,[/Date Of Enquiry\s*(\d{1,2}\/\d{1,2}\/\d{4})/i]), enquiryPurpose:firstMatch(c,[/Enquiry Purpose\s*([^\n\r]+)/i]) })).filter(e=>e.memberName&&e.dateOfEnquiry);
-}
+async function handleCibil(req:Request,res:Response){try{const {fileName,fileDataUrl,customerName,panNumber,dob}=req.body||{};if(!fileDataUrl)return res.status(400).json({success:false,message:"Please upload a CIBIL PDF before analysis."});if(!String(fileName||"").toLowerCase().endsWith(".pdf")&&!String(fileDataUrl).startsWith("data:application/pdf"))return res.status(415).json({success:false,message:"Only PDF credit reports are supported."});const report=await analyzeCibilWithOpenAI(String(fileDataUrl),String(fileName||"cibil-report.pdf"));const validation=validateReport(report,customerName,panNumber,dob);if(validation.errors.length)return res.status(422).json({success:false,code:"CIBIL_VALIDATION_FAILED",message:"CIBIL report was extracted but failed consistency validation.",validationErrors:validation.errors});report.verifiedProfile=validation.verifiedProfile;report.extractionMeta={mode:"OPENAI_DOCUMENT_INTELLIGENCE",model:process.env.OPENAI_CIBIL_MODEL||"gpt-5-mini",validated:true,warnings:report.warnings||[]};return res.json({success:true,message:"CIBIL report analyzed and validated.",report});}catch(error:any){console.error("OpenAI CIBIL analyzer error",error);return res.status(error?.code==="OPENAI_NOT_CONFIGURED"?503:500).json({success:false,code:error?.code||"CIBIL_AI_ANALYSIS_FAILED",message:error?.message||"Failed to analyze CIBIL report"});}}
 
-async function handleCibil(req:Request,res:Response){
-  try{
-    const {fileName,fileDataUrl,manualDetails,customerName,panNumber,dob}=req.body||{};
-    let text=String(manualDetails?.rawText||"");
-    if(fileDataUrl && (String(fileName||"").toLowerCase().endsWith(".pdf")||String(fileDataUrl).includes("application/pdf"))) text=await extractPdfText(Buffer.from(String(fileDataUrl).split(",")[1]||String(fileDataUrl),"base64"));
-    if(!text.trim()) return res.status(422).json({success:false,code:"CIBIL_TEXT_NOT_EXTRACTED",message:"Uploaded CIBIL PDF text could not be extracted."});
-
-    const scoreRaw=firstMatch(text,[/Your CIBIL Score is\s*([3-9]\d{2})\s+as of Date/i,/CIBIL Score[^\d]{0,30}([3-9]\d{2})\b/i]);
-    const score=scoreRaw?Number(scoreRaw):null;
-    const controlNumber=firstMatch(text,[/Control Number\s*:\s*([\d,]+)/i]);
-    const reportDate=firstMatch(text,[/Your CIBIL Score is\s*[3-9]\d{2}\s+as of Date\s*:\s*(\d{1,2}\/\d{1,2}\/\d{4})/i,/Control Number[^\n]*\nDate\s*:\s*(\d{1,2}\/\d{1,2}\/\d{4})/i]);
-    const detectedPan=firstMatch(text,[/Identification Type\s+Income Tax ID Number \(PAN\)[\s\S]{0,100}?ID Number\s+([A-Z]{5}\d{4}[A-Z])/i,/\b([A-Z]{5}\d{4}[A-Z])\b/]);
-    const detectedDob=firstMatch(text,[/Date Of Birth\s+(\d{1,2}\/\d{1,2}\/\d{4})/i]);
-    const detectedName=firstMatch(text,[/Hello,\s*([^\n\r]+?)(?:\.|\n)/i,/PERSONAL DETAILS[\s\S]{0,100}?Name\s*\n?\s*([^\n\r]+)/i]);
-    const accounts=parseAccounts(text);
-    const enquiries=parseEnquiries(text);
-    const openAccounts=accounts.filter(a=>a.isOpen);
-    const writtenOff=accounts.filter(a=>/written[\s-]*off/i.test(a.creditFacilityStatus||"") || (a.writtenOffAmountTotal||0)>0);
-    const settled=accounts.filter(a=>/settled/i.test(a.creditFacilityStatus||"") || (a.settlementAmount||0)>0);
-    const totalOverdue=accounts.reduce((s,a)=>s+(a.amountOverdue||0),0);
-    const totalOutstanding=openAccounts.reduce((s,a)=>s+Math.max(a.currentBalance||0,0),0);
-    const activeCreditCardsCount=openAccounts.filter(a=>/credit card/i.test(a.accountType||"")).length;
-    const activeLoansCount=openAccounts.length-activeCreditCardsCount;
-    const dpdInstances=accounts.reduce((s,a)=>s+(a.maxDpd&&a.maxDpd>0?1:0),0);
-
-    return res.json({success:true,message:"TransUnion CIBIL report parsed from uploaded source data.",report:{bureauName:"TransUnion CIBIL",score,controlNumber,reportDate,customerDetails:{name:detectedName,pan:detectedPan,dob:detectedDob},verifiedProfile:{matchedName:detectedName,matchedPan:detectedPan,matchedDob:detectedDob,isPanVerified:Boolean(panNumber&&detectedPan&&norm(panNumber)===norm(detectedPan)),isNameVerified:Boolean(customerName&&detectedName&&norm(customerName)===norm(detectedName)),isDobVerified:Boolean(dob&&detectedDob&&String(dob).replace(/\D/g,"")===String(detectedDob).replace(/\D/g,""))},summary:{activeLoansCount,activeCreditCardsCount,totalOutstanding,totalOverdue,settledAccountsCount:settled.length,writtenOffAccountsCount:writtenOff.length,totalEnquiries:enquiries.length,creditUtilizationPercent:null,dpdInstances},accounts,enquiries,extractionMeta:{mode:"TRANSUNION_CIBIL_SOURCE_ONLY",sourceTextCharacters:text.length,detectedAccounts:accounts.length,detectedEnquiries:enquiries.length,warnings:[]}}});
-  }catch(error:any){ console.error("CIBIL parsing error",error); return res.status(500).json({success:false,message:"Failed to parse uploaded CIBIL report",error:error?.message}); }
-}
-
-export default async function handler(req:Request,res:Response){
-  const path=req.url?.split("?")[0]||"";
-  if(req.method==="GET"&&path==="/api/health") return res.json({status:"ok",app:"Savrdh Credit Resolution Customer App",runtime:"vercel-serverless"});
-  if(req.method==="POST"&&path==="/api/cibil/parse-report") return handleCibil(req,res);
-  try{await ensureExpressServerLoaded();}catch(error:any){return res.status(500).json({success:false,message:"Backend initialization failed",error:error?.message});}
-  if(!capturedApp)return res.status(503).json({success:false,message:"SAVRDH API is initializing. Please retry."});
-  return capturedApp(req,res);
-}
+export default async function handler(req:Request,res:Response){const path=req.url?.split("?")[0]||"";if(req.method==="GET"&&path==="/api/health")return res.json({status:"ok",app:"Savrdh Credit Resolution Customer App",runtime:"vercel-serverless",cibilAnalyzer:process.env.OPENAI_API_KEY?"openai-ready":"openai-key-missing"});if(req.method==="POST"&&path==="/api/cibil/parse-report")return handleCibil(req,res);try{await ensureExpressServerLoaded();}catch(error:any){return res.status(500).json({success:false,message:"Backend initialization failed",error:error?.message});}if(!capturedApp)return res.status(503).json({success:false,message:"SAVRDH API is initializing. Please retry."});return capturedApp(req,res);}
