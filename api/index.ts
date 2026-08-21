@@ -2,23 +2,31 @@ import express from "express";
 import type { Request, Response } from "express";
 import { PDFParse } from "pdf-parse";
 
-// server.ts is written as a traditional long-running Express server. Vercel
-// invokes functions per request, so capture the Express app instead of opening
-// a TCP listener. This keeps all existing /api routes in one source of truth.
 let capturedApp: any = null;
+let serverLoadPromise: Promise<void> | null = null;
 
-const originalListen = (express.application as any).listen;
-(express.application as any).listen = function (..._args: any[]) {
-  capturedApp = this;
-  return {
-    on() { return this; },
-    close(callback?: () => void) { if (callback) callback(); },
-  } as any;
-};
-
-process.env.NODE_ENV = "production";
-await import("../server.ts");
-(express.application as any).listen = originalListen;
+async function ensureExpressServerLoaded() {
+  if (capturedApp) return;
+  if (!serverLoadPromise) {
+    serverLoadPromise = (async () => {
+      const originalListen = (express.application as any).listen;
+      try {
+        (express.application as any).listen = function (..._args: any[]) {
+          capturedApp = this;
+          return {
+            on() { return this; },
+            close(callback?: () => void) { if (callback) callback(); },
+          } as any;
+        };
+        process.env.NODE_ENV = "production";
+        await import("../server.ts");
+      } finally {
+        (express.application as any).listen = originalListen;
+      }
+    })();
+  }
+  await serverLoadPromise;
+}
 
 function cleanAmount(value?: string): number | null {
   if (!value) return null;
@@ -38,9 +46,7 @@ function countAccountStatuses(text: string, status: "written-off" | "settled"): 
   const accountSection = text.split(/enquir(?:y|ies)\s+(?:details|information)/i)[0] || text;
   const blocks = accountSection.split(/member\s*name/i).slice(1);
   if (!blocks.length) return 0;
-  const pattern = status === "written-off"
-    ? /written[\s-]*off|write[\s-]*off/i
-    : /\bsettled\b|settlement/i;
+  const pattern = status === "written-off" ? /written[\s-]*off|write[\s-]*off/i : /\bsettled\b|settlement/i;
   return blocks.filter((block) => pattern.test(block)).length;
 }
 
@@ -59,11 +65,7 @@ async function handleStrictCibilParse(req: Request, res: Response) {
     }
 
     if (!text.trim()) {
-      return res.status(422).json({
-        success: false,
-        code: "CIBIL_TEXT_NOT_EXTRACTED",
-        message: "Uploaded credit report could not be read. No demo/default values were used. Please upload a text-readable official PDF.",
-      });
+      return res.status(422).json({ success: false, code: "CIBIL_TEXT_NOT_EXTRACTED", message: "Uploaded credit report could not be read. No demo/default values were used. Please upload a text-readable official PDF." });
     }
 
     const scoreRaw = firstMatch(text, [
@@ -72,21 +74,11 @@ async function handleStrictCibilParse(req: Request, res: Response) {
       /\b([3-9]\d{2})\b(?=[\s\S]{0,35}(?:cibil\s+score|score\s+range|300\s*[-–]\s*900))/i,
     ]);
     const score = scoreRaw ? Number(scoreRaw) : null;
-
     const detectedPan = firstMatch(text, [/\b([A-Z]{5}[0-9]{4}[A-Z])\b/]);
-    const controlNumber = firstMatch(text, [
-      /control\s*(?:number|no\.?)[\s:#-]*([A-Z0-9,./-]{6,30})/i,
-      /(?:report\s*(?:number|no\.?)|ecn)[\s:#-]*([A-Z0-9,./-]{6,30})/i,
-    ]);
-    const reportDate = firstMatch(text, [
-      /(?:date\s+of\s+report|report\s+date|generated\s+on)\s*[:=-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i,
-      /\bdate\s*:\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i,
-    ]);
+    const controlNumber = firstMatch(text, [/control\s*(?:number|no\.?)[\s:#-]*([A-Z0-9,./-]{6,30})/i, /(?:report\s*(?:number|no\.?)|ecn)[\s:#-]*([A-Z0-9,./-]{6,30})/i]);
+    const reportDate = firstMatch(text, [/(?:date\s+of\s+report|report\s+date|generated\s+on)\s*[:=-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i, /\bdate\s*:\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i]);
     const detectedDob = firstMatch(text, [/(?:date\s+of\s+birth|dob)\s*[:=-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/i]);
-    const detectedName = firstMatch(text, [
-      /(?:consumer\s+name|applicant\s+name|customer\s+name)\s*[:=-]?\s*([A-Za-z][A-Za-z .]{2,60})/i,
-      /hello,\s*([A-Za-z][A-Za-z .]{2,60}?)(?:\n|$)/i,
-    ]);
+    const detectedName = firstMatch(text, [/(?:consumer\s+name|applicant\s+name|customer\s+name)\s*[:=-]?\s*([A-Za-z][A-Za-z .]{2,60})/i, /hello,\s*([A-Za-z][A-Za-z .]{2,60}?)(?:\n|$)/i]);
 
     let bureauName = "Credit Bureau";
     if (/transunion\s*cibil|\bcibil\b/i.test(text)) bureauName = "TransUnion CIBIL";
@@ -94,71 +86,21 @@ async function handleStrictCibilParse(req: Request, res: Response) {
     else if (/equifax/i.test(text)) bureauName = "Equifax";
     else if (/crif|high\s*mark/i.test(text)) bureauName = "CRIF High Mark";
 
-    const overdueValues = [...text.matchAll(/amount\s+overdue\s*[:₹Rs.\s]*([\d,]+)/gi)]
-      .map((m) => cleanAmount(m[1]))
-      .filter((v): v is number => v !== null);
+    const overdueValues = [...text.matchAll(/amount\s+overdue\s*[:₹Rs.\s]*([\d,]+)/gi)].map((m) => cleanAmount(m[1])).filter((v): v is number => v !== null);
     const totalOverdue = overdueValues.length ? overdueValues.reduce((a, b) => a + b, 0) : null;
-
     const accountBlocks = text.split(/member\s*name/i).slice(1);
     const writtenOffAccountsCount = countAccountStatuses(text, "written-off");
     const settledAccountsCount = countAccountStatuses(text, "settled");
-
     const normalized = (v: any) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const panExpected = normalized(panNumber);
-    const panActual = normalized(detectedPan);
-    const isPanVerified = Boolean(panExpected && panActual && panExpected === panActual);
+    const isPanVerified = Boolean(normalized(panNumber) && normalized(detectedPan) && normalized(panNumber) === normalized(detectedPan));
 
-    const report = {
-      bureauName,
-      score,
-      controlNumber,
-      reportDate,
-      customerDetails: {
-        name: detectedName,
-        pan: detectedPan,
-        dob: detectedDob,
-      },
-      verifiedProfile: {
-        matchedName: detectedName,
-        matchedPan: detectedPan,
-        matchedDob: detectedDob,
-        isPanVerified,
-        isNameVerified: Boolean(customerName && detectedName && normalized(customerName) === normalized(detectedName)),
-        isDobVerified: Boolean(dob && detectedDob && String(dob).replace(/\D/g, "") === String(detectedDob).replace(/\D/g, "")),
-        verificationScore: null,
-        verificationNotes: "Identity fields are marked verified only when the uploaded bureau report contains an exact matching value. Missing fields are not auto-filled.",
-      },
-      summary: {
-        activeLoansCount: null,
-        activeCreditCardsCount: null,
-        totalOutstanding: null,
-        totalOverdue,
-        settledAccountsCount,
-        writtenOffAccountsCount,
-        totalEnquiries: null,
-        creditUtilizationPercent: null,
-        dpdInstances: null,
-      },
-      accounts: [],
-      enquiries: [],
-      extractionMeta: {
-        mode: "STRICT_SOURCE_ONLY",
-        sourceTextCharacters: text.length,
-        detectedAccountBlocks: accountBlocks.length,
-        warnings: [
-          ...(score === null ? ["CIBIL score could not be confidently extracted"] : []),
-          ...(controlNumber === null ? ["Control number could not be confidently extracted"] : []),
-          ...(detectedPan === null ? ["PAN was not found in report text"] : []),
-          "No hardcoded customer, score, balance, account, DPD, utilization or enquiry fallback data is used.",
-        ],
-      },
-    };
-
-    return res.json({
-      success: true,
-      message: "Credit report analyzed in strict source-only mode. Only values found in the uploaded report are returned.",
-      report,
-    });
+    return res.json({ success: true, message: "Credit report analyzed in strict source-only mode. Only values found in the uploaded report are returned.", report: {
+      bureauName, score, controlNumber, reportDate,
+      customerDetails: { name: detectedName, pan: detectedPan, dob: detectedDob },
+      verifiedProfile: { matchedName: detectedName, matchedPan: detectedPan, matchedDob: detectedDob, isPanVerified, isNameVerified: Boolean(customerName && detectedName && normalized(customerName) === normalized(detectedName)), isDobVerified: Boolean(dob && detectedDob && String(dob).replace(/\D/g, "") === String(detectedDob).replace(/\D/g, "")), verificationScore: null, verificationNotes: "Identity fields are verified only when exact values are present in the uploaded bureau report." },
+      summary: { activeLoansCount: null, activeCreditCardsCount: null, totalOutstanding: null, totalOverdue, settledAccountsCount: countAccountStatuses(text, "settled"), writtenOffAccountsCount: countAccountStatuses(text, "written-off"), totalEnquiries: null, creditUtilizationPercent: null, dpdInstances: null },
+      accounts: [], enquiries: [], extractionMeta: { mode: "STRICT_SOURCE_ONLY", sourceTextCharacters: text.length, detectedAccountBlocks: accountBlocks.length, warnings: [...(score === null ? ["CIBIL score could not be confidently extracted"] : []), ...(controlNumber === null ? ["Control number could not be confidently extracted"] : []), ...(detectedPan === null ? ["PAN was not found in report text"] : []), "No hardcoded customer, score, balance, account, DPD, utilization or enquiry fallback data is used."] }
+    }});
   } catch (error: any) {
     console.error("Strict CIBIL parsing error:", error);
     return res.status(500).json({ success: false, message: "Failed to parse uploaded credit report", error: error?.message });
@@ -166,15 +108,16 @@ async function handleStrictCibilParse(req: Request, res: Response) {
 }
 
 export default async function handler(req: Request, res: Response) {
-  if (req.method === "POST" && req.url && req.url.split("?")[0] === "/api/cibil/parse-report") {
-    return handleStrictCibilParse(req, res);
-  }
+  const path = req.url?.split("?")[0] || "";
+  if (req.method === "GET" && path === "/api/health") return res.json({ status: "ok", app: "Savrdh Credit Resolution Customer App", runtime: "vercel-serverless" });
+  if (req.method === "POST" && path === "/api/cibil/parse-report") return handleStrictCibilParse(req, res);
 
-  if (!capturedApp) {
-    return res.status(503).json({
-      success: false,
-      message: "SAVRDH API is initializing. Please retry.",
-    });
+  try {
+    await ensureExpressServerLoaded();
+  } catch (error: any) {
+    console.error("Express backend initialization failed:", error);
+    return res.status(500).json({ success: false, message: "Backend initialization failed", error: error?.message });
   }
+  if (!capturedApp) return res.status(503).json({ success: false, message: "SAVRDH API is initializing. Please retry." });
   return capturedApp(req, res);
 }
