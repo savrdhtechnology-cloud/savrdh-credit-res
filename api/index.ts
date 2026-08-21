@@ -20,7 +20,17 @@ async function ensureExpressServerLoaded() {
 function firstMatch(text:string, patterns:RegExp[]) { for (const p of patterns) { const m=text.match(p); if(m?.[1]) return m[1].trim(); } return null; }
 function money(v?:string|null){ if(!v || v.trim()==="-") return null; const n=Number(v.replace(/[^0-9.-]/g,"")); return Number.isFinite(n)?n:null; }
 function norm(v:any){ return String(v||"").toUpperCase().replace(/[^A-Z0-9]/g,""); }
-async function extractPdfText(buffer:Buffer){ const mod:any=await import("pdf-parse"); const PDFParse=mod.PDFParse; if(!PDFParse) throw new Error("PDF parser unavailable"); const parser=new PDFParse({data:buffer}); try { const r:any=await parser.getText(); return typeof r==="string"?r:String(r?.text||""); } finally { if(typeof parser.destroy==="function") await parser.destroy(); } }
+
+// pdfjs references browser graphics globals even when we only request text.
+// Vercel's Node runtime does not provide these globals and native canvas is not
+// guaranteed to be bundled. Minimal no-op shims are enough for text extraction.
+function ensurePdfJsNodeGlobals(){
+  const g:any=globalThis as any;
+  if(typeof g.DOMMatrix==="undefined") g.DOMMatrix=class DOMMatrix { constructor(_init?:any){} multiply(){return this;} preMultiplySelf(){return this;} translate(){return this;} scale(){return this;} rotate(){return this;} inverse(){return this;} };
+  if(typeof g.ImageData==="undefined") g.ImageData=class ImageData { data:any; width:number; height:number; constructor(dataOrWidth:any,widthOrHeight:any,height?:any){ if(typeof dataOrWidth==="number"){this.width=dataOrWidth;this.height=widthOrHeight;this.data=new Uint8ClampedArray(this.width*this.height*4);}else{this.data=dataOrWidth;this.width=widthOrHeight;this.height=height||0;} } };
+  if(typeof g.Path2D==="undefined") g.Path2D=class Path2D { constructor(_path?:any){} addPath(){} moveTo(){} lineTo(){} rect(){} closePath(){} bezierCurveTo(){} quadraticCurveTo(){} arc(){} arcTo(){} ellipse(){} };
+}
+async function extractPdfText(buffer:Buffer){ ensurePdfJsNodeGlobals(); const mod:any=await import("pdf-parse"); const PDFParse=mod.PDFParse; if(!PDFParse) throw new Error("PDF parser unavailable"); const parser=new PDFParse({data:buffer}); try { const r:any=await parser.getText(); return typeof r==="string"?r:String(r?.text||""); } finally { if(typeof parser.destroy==="function") await parser.destroy(); } }
 
 function parseAccounts(text:string){
   const accountsPart=(text.split(/ENQUIRY DETAILS/i)[0]||text);
