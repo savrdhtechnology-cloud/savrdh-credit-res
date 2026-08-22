@@ -43,8 +43,9 @@ export const LoanStatementAnalyzer: React.FC<LoanStatementAnalyzerProps> = ({
   isStandalone = false,
 }) => {
   const [statement, setStatement] = useState<LoanStatementAnalysis>(SAMPLE_LOAN_STATEMENTS[0]);
-  const [activeSampleId, setActiveSampleId] = useState<string>("loan-sample-1");
-  const [inputMode, setInputMode] = useState<"DEMO" | "UPLOAD" | "PASTE">("DEMO");
+  const [hasActiveStatement, setHasActiveStatement] = useState(false);
+  const [activeSampleId, setActiveSampleId] = useState<string>("");
+  const [inputMode, setInputMode] = useState<"DEMO" | "UPLOAD" | "PASTE">("UPLOAD");
 
   const [uploadedFile, setUploadedFile] = useState<{ name: string; size: string; dataUrl: string } | null>(null);
   const [rawText, setRawText] = useState("");
@@ -62,6 +63,7 @@ export const LoanStatementAnalyzer: React.FC<LoanStatementAnalyzerProps> = ({
     if (s) {
       setActiveSampleId(sampleId);
       setStatement(s);
+      setHasActiveStatement(true);
       setSuccessMsg(`Loaded statement: ${s.lenderName} (${s.loanType})`);
       setTimeout(() => setSuccessMsg(""), 3000);
     }
@@ -137,7 +139,7 @@ export const LoanStatementAnalyzer: React.FC<LoanStatementAnalyzerProps> = ({
     }
   };
 
-  return (
+    return (
     <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-6 text-slate-100">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">

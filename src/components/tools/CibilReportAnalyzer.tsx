@@ -45,9 +45,9 @@ export const CibilReportAnalyzer: React.FC<CibilReportAnalyzerProps> = ({
   isStandalone = false,
 }) => {
   // Active Report State
-  const [report, setReport] = useState<CreditBureauReport>(initialReport || SAMPLE_CIBIL_REPORTS[0].report);
-  const [activeSampleId, setActiveSampleId] = useState<string>("sample-balram");
-  const [inputMode, setInputMode] = useState<"DEMO" | "UPLOAD" | "PASTE">("DEMO");
+  const [report, setReport] = useState<CreditBureauReport>(initialReport || DEFAULT_CREDIT_REPORT);
+  const [activeSampleId, setActiveSampleId] = useState<string>(initialReport ? "initial-report" : "");
+  const [inputMode, setInputMode] = useState<"DEMO" | "UPLOAD" | "PASTE">("UPLOAD");
 
   // File Upload State
   const [uploadedFile, setUploadedFile] = useState<{ name: string; size: string; dataUrl: string } | null>(null);
