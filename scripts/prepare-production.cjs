@@ -88,6 +88,15 @@ replaceOrFail(cibilPath,
   '      {!hasAnalysis && !isAnalyzing && (\n        <div className="p-8 rounded-2xl bg-navy-950 border border-slate-800 text-center space-y-2">\n          <FileText className="w-8 h-8 text-slate-500 mx-auto" />\n          <h3 className="text-sm font-bold text-slate-200">Start a New CIBIL Analysis</h3>\n          <p className="text-xs text-slate-400">Upload a new bureau PDF, paste report text, or manually choose a demo sample. No previous customer report is loaded.</p>\n        </div>\n      )}\n\n      {/* MAIN ANALYSIS REPORT VIEW */}\n      <div className={hasAnalysis ? "space-y-5" : "hidden"}>',
   'CIBIL hide old/default analysis view');
 
+// IMPORTANT: standalone CIBIL tool must never inherit the app's current/previous customer report.
+const appPath = 'src/App.tsx';
+replaceOrFail(
+  appPath,
+  '<CibilReportAnalyzer initialReport={creditReport} onClose={() => setActiveStandaloneTool(null)}',
+  '<CibilReportAnalyzer onClose={() => setActiveStandaloneTool(null)}',
+  'Standalone CIBIL starts without previous report'
+);
+
 const loanPath = 'src/components/tools/LoanStatementAnalyzer.tsx';
 replaceOrFail(loanPath,
   '      const dataUrl = typeof reader.result === "string" ? reader.result : "";\n      setUploadedFile({',
