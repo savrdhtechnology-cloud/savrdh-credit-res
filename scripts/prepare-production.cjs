@@ -61,77 +61,51 @@ const oldDob = `        dob: kycData.fetchedProfile?.dob || "14/06/1988",`;
 const strictDob = `        dob: kycData.fetchedProfile?.dob || undefined,`;
 replaceOrFail(step4Path, oldDob, strictDob, 'remove fake DOB default');
 
-// -----------------------------------------------------------------------------
 // Fresh-session safety for standalone analyzer tools.
-// The typed placeholder objects remain internal only; no old/demo result is
-// rendered until a user explicitly analyzes a new file/text or selects a demo.
-// -----------------------------------------------------------------------------
 const cibilPath = 'src/components/tools/CibilReportAnalyzer.tsx';
-replaceOrFail(
-  cibilPath,
-  `  const [successMsg, setSuccessMsg] = useState("");\n\n  // Filters & Expanded Accounts`,
-  `  const [successMsg, setSuccessMsg] = useState("");\n  const [hasAnalysis, setHasAnalysis] = useState(Boolean(initialReport));\n\n  // Filters & Expanded Accounts`,
-  'CIBIL add fresh-session gate state'
-);
-replaceOrFail(
-  cibilPath,
-  `      setReport(s.report);\n      setSuccessMsg(\`Loaded sample report: \${s.name}\`);`,
-  `      setReport(s.report);\n      setHasAnalysis(true);\n      setSuccessMsg(\`Loaded sample report: \${s.name}\`);`,
-  'CIBIL activate only selected demo'
-);
-replaceOrFail(
-  cibilPath,
-  `      const dataUrl = typeof reader.result === "string" ? reader.result : "";\n      setUploadedFile({`,
-  `      const dataUrl = typeof reader.result === "string" ? reader.result : "";\n      setHasAnalysis(false);\n      setActiveSampleId("");\n      setUploadedFile({`,
-  'CIBIL clear previous result on new file'
-);
-replaceOrFail(
-  cibilPath,
-  `        setReport(res.report);\n        setActiveSampleId("custom-upload");`,
-  `        setReport(res.report);\n        setHasAnalysis(true);\n        setActiveSampleId("custom-upload");`,
-  'CIBIL show result only after successful analysis'
-);
-replaceOrFail(
-  cibilPath,
-  `        customerName: report.verifiedProfile?.matchedName || "Customer",\n        panNumber: report.verifiedProfile?.matchedPan || "ABCDE1234F",`,
-  `        customerName: hasAnalysis ? (report.verifiedProfile?.matchedName || "Customer") : "Customer",\n        panNumber: hasAnalysis ? (report.verifiedProfile?.matchedPan || "") : "",`,
-  'CIBIL prevent stale identity reuse'
-);
-replaceOrFail(
-  cibilPath,
-  `      {/* MAIN ANALYSIS REPORT VIEW */}\n      <div className="space-y-5">`,
-  `      {!hasAnalysis && !isAnalyzing && (\n        <div className="p-8 rounded-2xl bg-navy-950 border border-slate-800 text-center space-y-2">\n          <FileText className="w-8 h-8 text-slate-500 mx-auto" />\n          <h3 className="text-sm font-bold text-slate-200">Start a New CIBIL Analysis</h3>\n          <p className="text-xs text-slate-400">Upload a new bureau PDF, paste report text, or manually choose a demo sample. No previous customer report is loaded.</p>\n        </div>\n      )}\n\n      {/* MAIN ANALYSIS REPORT VIEW */}\n      <div className={hasAnalysis ? "space-y-5" : "hidden"}>`,
-  'CIBIL hide old/default analysis view'
-);
+replaceOrFail(cibilPath,
+  '  const [successMsg, setSuccessMsg] = useState("");\n\n  // Filters & Expanded Accounts',
+  '  const [successMsg, setSuccessMsg] = useState("");\n  const [hasAnalysis, setHasAnalysis] = useState(Boolean(initialReport));\n\n  // Filters & Expanded Accounts',
+  'CIBIL add fresh-session gate state');
+replaceOrFail(cibilPath,
+  '      setReport(s.report);\n      setSuccessMsg(`Loaded sample report: ${s.name}`);',
+  '      setReport(s.report);\n      setHasAnalysis(true);\n      setSuccessMsg(`Loaded sample report: ${s.name}`);',
+  'CIBIL activate only selected demo');
+replaceOrFail(cibilPath,
+  '      const dataUrl = typeof reader.result === "string" ? reader.result : "";\n      setUploadedFile({',
+  '      const dataUrl = typeof reader.result === "string" ? reader.result : "";\n      setHasAnalysis(false);\n      setActiveSampleId("");\n      setUploadedFile({',
+  'CIBIL clear previous result on new file');
+replaceOrFail(cibilPath,
+  '        setReport(res.report);\n        setActiveSampleId("custom-upload");',
+  '        setReport(res.report);\n        setHasAnalysis(true);\n        setActiveSampleId("custom-upload");',
+  'CIBIL show result only after successful analysis');
+replaceOrFail(cibilPath,
+  '        customerName: report.verifiedProfile?.matchedName || "Customer",\n        panNumber: report.verifiedProfile?.matchedPan || "ABCDE1234F",',
+  '        customerName: hasAnalysis ? (report.verifiedProfile?.matchedName || "Customer") : "Customer",\n        panNumber: hasAnalysis ? (report.verifiedProfile?.matchedPan || "") : "",',
+  'CIBIL prevent stale identity reuse');
+replaceOrFail(cibilPath,
+  '      {/* MAIN ANALYSIS REPORT VIEW */}\n      <div className="space-y-5">',
+  '      {!hasAnalysis && !isAnalyzing && (\n        <div className="p-8 rounded-2xl bg-navy-950 border border-slate-800 text-center space-y-2">\n          <FileText className="w-8 h-8 text-slate-500 mx-auto" />\n          <h3 className="text-sm font-bold text-slate-200">Start a New CIBIL Analysis</h3>\n          <p className="text-xs text-slate-400">Upload a new bureau PDF, paste report text, or manually choose a demo sample. No previous customer report is loaded.</p>\n        </div>\n      )}\n\n      {/* MAIN ANALYSIS REPORT VIEW */}\n      <div className={hasAnalysis ? "space-y-5" : "hidden"}>',
+  'CIBIL hide old/default analysis view');
 
 const loanPath = 'src/components/tools/LoanStatementAnalyzer.tsx';
-replaceOrFail(
-  loanPath,
-  `      const dataUrl = typeof reader.result === "string" ? reader.result : "";\n      setUploadedFile({`,
-  `      const dataUrl = typeof reader.result === "string" ? reader.result : "";\n      setHasActiveStatement(false);\n      setActiveSampleId("");\n      setUploadedFile({`,
-  'Loan clear previous result on new file'
-);
-replaceOrFail(
-  loanPath,
-  `        setStatement(res.statement);\n        setActiveSampleId("custom-statement");`,
-  `        setStatement(res.statement);\n        setHasActiveStatement(true);\n        setActiveSampleId("custom-statement");`,
-  'Loan show result only after successful analysis'
-);
-replaceOrFail(
-  loanPath,
-  `      {/* 1. KEY LOAN SANCTION & REPAYMENT SUMMARY CARD */}\n      <div className="p-5 rounded-2xl navy-card-gold relative overflow-hidden space-y-4">`,
-  `      {!hasActiveStatement && !isAnalyzing && (\n        <div className="p-8 rounded-2xl bg-navy-950 border border-slate-800 text-center space-y-2">\n          <FileText className="w-8 h-8 text-slate-500 mx-auto" />\n          <h3 className="text-sm font-bold text-slate-200">Start a New Loan Statement Audit</h3>\n          <p className="text-xs text-slate-400">Upload a new PDF/CSV, paste statement text, or manually choose a demo sample. No previous loan data is loaded.</p>\n        </div>\n      )}\n\n      {/* 1. KEY LOAN SANCTION & REPAYMENT SUMMARY CARD */}\n      <div className={\`${hasActiveStatement ? "" : "hidden"} p-5 rounded-2xl navy-card-gold relative overflow-hidden space-y-4\`}>`,
-  'Loan hide old/default summary'
-);
-replaceOrFail(
-  loanPath,
-  `      <div\n        className={\`p-5 rounded-2xl border-2 space-y-3.5 \${`,
-  `      <div\n        className={\`\${hasActiveStatement ? "" : "hidden"} p-5 rounded-2xl border-2 space-y-3.5 \${`,
-  'Loan hide old/default forensic result'
-);
-replaceOrFail(
-  loanPath,
-  `{statement.transactions && statement.transactions.length > 0 && (`,
-  `{hasActiveStatement && statement.transactions && statement.transactions.length > 0 && (`,
-  'Loan hide old/default transactions'
-);
+replaceOrFail(loanPath,
+  '      const dataUrl = typeof reader.result === "string" ? reader.result : "";\n      setUploadedFile({',
+  '      const dataUrl = typeof reader.result === "string" ? reader.result : "";\n      setHasActiveStatement(false);\n      setActiveSampleId("");\n      setUploadedFile({',
+  'Loan clear previous result on new file');
+replaceOrFail(loanPath,
+  '        setStatement(res.statement);\n        setActiveSampleId("custom-statement");',
+  '        setStatement(res.statement);\n        setHasActiveStatement(true);\n        setActiveSampleId("custom-statement");',
+  'Loan show result only after successful analysis');
+replaceOrFail(loanPath,
+  '      {/* 1. KEY LOAN SANCTION & REPAYMENT SUMMARY CARD */}\n      <div className="p-5 rounded-2xl navy-card-gold relative overflow-hidden space-y-4">',
+  '      {!hasActiveStatement && !isAnalyzing && (\n        <div className="p-8 rounded-2xl bg-navy-950 border border-slate-800 text-center space-y-2">\n          <FileText className="w-8 h-8 text-slate-500 mx-auto" />\n          <h3 className="text-sm font-bold text-slate-200">Start a New Loan Statement Audit</h3>\n          <p className="text-xs text-slate-400">Upload a new PDF/CSV, paste statement text, or manually choose a demo sample. No previous loan data is loaded.</p>\n        </div>\n      )}\n\n      {/* 1. KEY LOAN SANCTION & REPAYMENT SUMMARY CARD */}\n      <div className={(hasActiveStatement ? "" : "hidden") + " p-5 rounded-2xl navy-card-gold relative overflow-hidden space-y-4"}>',
+  'Loan hide old/default summary');
+replaceOrFail(loanPath,
+  '      <div\n        className={`p-5 rounded-2xl border-2 space-y-3.5 ${',
+  '      <div\n        className={(hasActiveStatement ? "" : "hidden") + ` p-5 rounded-2xl border-2 space-y-3.5 ${',
+  'Loan hide old/default forensic result');
+replaceOrFail(loanPath,
+  '{statement.transactions && statement.transactions.length > 0 && (',
+  '{hasActiveStatement && statement.transactions && statement.transactions.length > 0 && (',
+  'Loan hide old/default transactions');
