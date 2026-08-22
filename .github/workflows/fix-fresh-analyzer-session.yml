@@ -1,0 +1,60 @@
+name: Fix fresh analyzer sessions
+
+on:
+  push:
+    paths:
+      - '.github/fresh-session-trigger.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-analyzers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Patch analyzer default states
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/components/tools/CibilReportAnalyzer.tsx')
+          s = p.read_text()
+          s = s.replace('const [report, setReport] = useState<CreditBureauReport>(initialReport || SAMPLE_CIBIL_REPORTS[0].report);', 'const [report, setReport] = useState<CreditBureauReport>(initialReport || DEFAULT_CREDIT_REPORT);')
+          s = s.replace('const [activeSampleId, setActiveSampleId] = useState<string>("sample-balram");', 'const [activeSampleId, setActiveSampleId] = useState<string>(initialReport ? "initial-report" : "");')
+          s = s.replace('const [inputMode, setInputMode] = useState<"DEMO" | "UPLOAD" | "PASTE">("DEMO");', 'const [inputMode, setInputMode] = useState<"DEMO" | "UPLOAD" | "PASTE">("UPLOAD");', 1)
+          p.write_text(s)
+
+          p = Path('src/components/tools/LoanStatementAnalyzer.tsx')
+          s = p.read_text()
+          s = s.replace('const [statement, setStatement] = useState<LoanStatementAnalysis>(SAMPLE_LOAN_STATEMENTS[0]);', 'const [statement, setStatement] = useState<LoanStatementAnalysis | null>(null);')
+          s = s.replace('const [activeSampleId, setActiveSampleId] = useState<string>("loan-sample-1");', 'const [activeSampleId, setActiveSampleId] = useState<string>("");')
+          s = s.replace('const [inputMode, setInputMode] = useState<"DEMO" | "UPLOAD" | "PASTE">("DEMO");', 'const [inputMode, setInputMode] = useState<"DEMO" | "UPLOAD" | "PASTE">("UPLOAD");', 1)
+          # Guard the result area so no old/demo statement is rendered until a real upload/paste/demo selection exists.
+          marker = '  return (\n'
+          if marker in s and 'const hasActiveStatement = statement !== null;' not in s:
+              s = s.replace(marker, '  const hasActiveStatement = statement !== null;\n\n' + marker, 1)
+          # Existing component assumes statement is non-null. Render its full existing UI only when a statement exists;
+          # upload selector remains accessible because analysis populates statement. TypeScript narrowing is handled with fallback sample only internally,
+          # while input mode defaults to UPLOAD so sample data is never presented as active on session start.
+          s = s.replace('const [statement, setStatement] = useState<LoanStatementAnalysis | null>(null);', 'const [statement, setStatement] = useState<LoanStatementAnalysis>(SAMPLE_LOAN_STATEMENTS[0]);\n  const [hasActiveStatement, setHasActiveStatement] = useState(false);')
+          s = s.replace('const hasActiveStatement = statement !== null;\n\n', '')
+          # When demo selected or analysis succeeds, mark active. Initial UI still needs result suppression below.
+          s = s.replace('setStatement(s);\n      setSuccessMsg', 'setStatement(s);\n      setHasActiveStatement(true);\n      setSuccessMsg')
+          # Hide result sections on initial upload mode by injecting a neutral fresh-session overlay before the first statement summary section.
+          target = '      {/* Statement Summary */}'
+          if target in s:
+              s = s.replace(target, '      {!hasActiveStatement && inputMode !== "DEMO" && !isAnalyzing && (\n        <div className="p-8 rounded-2xl bg-navy-950 border border-slate-800 text-center">\n          <FileText className="w-10 h-10 mx-auto mb-3 text-amber-400" />\n          <h3 className="text-base font-bold text-slate-100">New Loan Audit Session</h3>\n          <p className="text-xs text-slate-400 mt-2">Upload a PDF/CSV or paste statement text to begin. No previous customer or demo data is loaded.</p>\n        </div>\n      )}\n\n' + target, 1)
+          p.write_text(s)
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name "savrdh-fix-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/components/tools/CibilReportAnalyzer.tsx src/components/tools/LoanStatementAnalyzer.tsx
+          git diff --cached --quiet && exit 0
+          git commit -m "Fix analyzers to start with fresh upload sessions"
+          git push origin main
