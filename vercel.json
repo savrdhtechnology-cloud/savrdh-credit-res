@@ -1,37 +1,18 @@
 {
   "version": 2,
   "builds": [
-    {
-      "src": "api/admin-login.ts",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "api/index.ts",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist"
-      }
-    }
+    { "src": "api/admin-login.ts", "use": "@vercel/node" },
+    { "src": "api/crm-store.ts", "use": "@vercel/node" },
+    { "src": "api/index.ts", "use": "@vercel/node" },
+    { "src": "package.json", "use": "@vercel/static-build", "config": { "distDir": "dist" } }
   ],
   "routes": [
-    {
-      "src": "/api/admin/login",
-      "dest": "/api/admin-login.ts"
-    },
-    {
-      "src": "/api/(.*)",
-      "dest": "/api/index.ts"
-    },
-    {
-      "handle": "filesystem"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
-    }
+    { "src": "/api/admin/login", "dest": "/api/admin-login.ts" },
+    { "src": "/api/crm/create-lead", "dest": "/api/crm-store.ts?action=create" },
+    { "src": "/api/admin/leads", "dest": "/api/crm-store.ts?action=leads" },
+    { "src": "/api/admin/stats", "dest": "/api/crm-store.ts?action=stats" },
+    { "src": "/api/(.*)", "dest": "/api/index.ts" },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
