@@ -12,6 +12,68 @@
   <body class="bg-[#070B14] text-slate-100 antialiased font-sans selection:bg-amber-500/30 selection:text-amber-200">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Customer Portal credit-resolution cases are disputes, not loan applications.
+      // Keep the customer-facing case journey aligned with bureau/lender rectification work.
+      (() => {
+        const replacements = new Map([
+          ["NEW LEAD", "DISPUTE RAISED"],
+          ["New Lead", "Dispute Raised"],
+          ["All Cases", "Credit Disputes"],
+          ["MY CASES", "MY DISPUTES"],
+          ["My Cases", "My Disputes"],
+          ["Track every case you’ve registered with SAVRDH.", "Track every credit dispute you’ve registered with SAVRDH."],
+          ["Track every case you've registered with SAVRDH.", "Track every credit dispute you've registered with SAVRDH."],
+          ["Case Registered", "Dispute Raised"],
+          ["Case ID", "Dispute ID"],
+          ["Search by Case ID or service...", "Search by Dispute ID or institution..."],
+          ["Case is assigned and initial diagnosis complete.", "Credit dispute registered and initial bureau review started."],
+          ["Documents Verified", "Documents & Credit Report Reviewed"],
+          ["KYC and financial documents verified.", "KYC, credit report and supporting documents reviewed."],
+          ["Lender Placement", "Dispute Filed with Lender / Bureau"],
+          ["Proposal submitted to lenders.", "Formal rectification request submitted to the concerned lender / credit bureau."],
+          ["In-Principle Sanction", "Lender / Bureau Response"],
+          ["Awaiting sanction letter.", "Awaiting investigation response and correction confirmation."],
+          ["Disbursement", "Credit Report Updated / Resolved"],
+          ["Documentation and disbursement.", "Correction verified in the updated credit report and dispute marked resolved."],
+          ["Case Active", "Dispute Active"]
+        ]);
+
+        const applyCreditDisputeTerminology = () => {
+          if (!window.location.pathname.startsWith("/portal/cases")) return;
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+          for (const node of nodes) {
+            const raw = node.nodeValue || "";
+            const trimmed = raw.trim();
+            if (!trimmed) continue;
+            let next = raw;
+            for (const [from, to] of replacements) {
+              if (trimmed === from) {
+                next = raw.replace(from, to);
+                break;
+              }
+            }
+            if (next !== raw) node.nodeValue = next;
+          }
+        };
+
+        let queued = false;
+        const queueApply = () => {
+          if (queued) return;
+          queued = true;
+          requestAnimationFrame(() => {
+            queued = false;
+            applyCreditDisputeTerminology();
+          });
+        };
+
+        window.addEventListener("DOMContentLoaded", queueApply);
+        window.addEventListener("popstate", queueApply);
+        new MutationObserver(queueApply).observe(document.documentElement, { childList: true, subtree: true });
+        queueApply();
+      })();
+    </script>
   </body>
 </html>
-
